@@ -1,0 +1,9 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+data/indexes
+.pytest_cache
+.mypy_cache
+.streamlit

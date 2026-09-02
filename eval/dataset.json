@@ -1,0 +1,226 @@
+{
+  "version": "1.0",
+  "application": "research-assistant-rag",
+  "hold_constant": [
+    "application code path",
+    "prompt templates in llm/prompt_builder.py",
+    "evaluation questions in this file",
+    "shared FAISS/Chroma knowledge base (PDFs + application source)",
+    "chunk size/overlap, embedding model, retrieval k, temperature, num_ctx, num_predict",
+    "arxiv disabled during eval for reproducibility"
+  ],
+  "models": ["llama3:8b", "codellama:7b", "starcoder2:3b"],
+  "items": [
+    {
+      "id": "Q01",
+      "category": "rag_qa",
+      "question": "What is retrieval-augmented generation and how is it typically evaluated according to the local knowledge base?",
+      "gold_keywords": ["retrieval", "generation", "RAG", "document", "query"],
+      "expected_files": ["rag_survey.pdf"],
+      "must_cite": true
+    },
+    {
+      "id": "Q02",
+      "category": "rag_qa",
+      "question": "What limitations of parametric-only language models does retrieval augmentation address?",
+      "gold_keywords": ["parametric", "knowledge", "retrieval", "hallucination", "memory"],
+      "expected_files": ["rag_survey.pdf"],
+      "must_cite": true
+    },
+    {
+      "id": "Q03",
+      "category": "rag_qa",
+      "question": "Summarize the core problem studied in the ingested PDF and cite page or section evidence.",
+      "gold_keywords": ["problem", "retrieval", "generation"],
+      "expected_files": ["rag_survey.pdf"],
+      "must_cite": true
+    },
+    {
+      "id": "Q04",
+      "category": "analysis",
+      "question": "Analyze the local PDF: core problem, methodology, key contributions, and limitations.",
+      "gold_keywords": ["methodology", "contribution", "limitation"],
+      "expected_files": ["rag_survey.pdf"],
+      "must_cite": true
+    },
+    {
+      "id": "Q05",
+      "category": "comparison",
+      "question": "Compare dense retrieval versus sparse BM25 for academic RAG systems using the local documents.",
+      "gold_keywords": ["dense", "BM25", "sparse", "retrieval"],
+      "expected_files": [],
+      "must_cite": true
+    },
+    {
+      "id": "Q06",
+      "category": "gap_analysis",
+      "question": "What open research gaps remain in multi-document academic RAG based on the knowledge base?",
+      "gold_keywords": ["gap", "limitation", "future", "multi-document"],
+      "expected_files": [],
+      "must_cite": true
+    },
+    {
+      "id": "Q07",
+      "category": "recommendation",
+      "question": "Recommend the next three papers or topics I should read on citation-grounded question answering.",
+      "gold_keywords": ["recommend", "citation", "question answering"],
+      "expected_files": [],
+      "must_cite": false
+    },
+    {
+      "id": "Q08",
+      "category": "discovery",
+      "question": "Find literature in the local store related to hybrid search and re-ranking for RAG.",
+      "gold_keywords": ["hybrid", "re-rank", "BM25", "dense"],
+      "expected_files": [],
+      "must_cite": true
+    },
+    {
+      "id": "Q09",
+      "category": "repo_multi_file",
+      "question": "Which files are involved in handling a research query from HTTP request to final answer?",
+      "gold_keywords": ["api/main.py", "orchestrator.py", "rag_service.py"],
+      "expected_files": ["api/main.py", "services/orchestrator.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q10",
+      "category": "repo_multi_file",
+      "question": "Which function calls the arXiv discovery module and when is it skipped?",
+      "gold_keywords": ["discovery", "arxiv_search", "disable_arxiv"],
+      "expected_files": ["services/orchestrator.py", "services/discovery_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q11",
+      "category": "repo_multi_file",
+      "question": "What happens after a user submits a research query in the Streamlit UI?",
+      "gold_keywords": ["httpx", "/query", "session_state", "ui/app.py"],
+      "expected_files": ["ui/app.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q12",
+      "category": "repo_multi_file",
+      "question": "Which components may be affected if CitationService.register_chunk is modified?",
+      "gold_keywords": ["CitationService", "orchestrator", "register_chunk"],
+      "expected_files": ["services/citation_service.py", "services/orchestrator.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q13",
+      "category": "repo_multi_file",
+      "question": "Which test cases are related to planner JSON extraction?",
+      "gold_keywords": ["extract_json_object", "test_planner"],
+      "expected_files": ["tests/test_planner.py", "services/planner_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q14",
+      "category": "repo_retrieval",
+      "question": "Where is FAISS k bounded to index.ntotal and why?",
+      "gold_keywords": ["ntotal", "k_used", "faiss"],
+      "expected_files": ["vector_db/faiss_db.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q15",
+      "category": "repo_retrieval",
+      "question": "How does hybrid re-ranking combine dense search and BM25?",
+      "gold_keywords": ["RRF", "BM25", "reciprocal"],
+      "expected_files": ["services/reranker_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q16",
+      "category": "repo_retrieval",
+      "question": "What chunk size and overlap does the RAG ingestion pipeline use?",
+      "gold_keywords": ["CHUNK_SIZE", "CHUNK_OVERLAP", "512", "100"],
+      "expected_files": ["config.py", "services/rag_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q17",
+      "category": "dependency",
+      "question": "Which modules import OllamaLLM and how is response.content read?",
+      "gold_keywords": ["response.message.content", "OllamaLLM"],
+      "expected_files": ["llm/llm_model.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q18",
+      "category": "bug_analysis",
+      "question": "What could cause Streamlit to show Query failed: timed out even if Ollama is running?",
+      "gold_keywords": ["timeout", "httpx", "planner", "sequential"],
+      "expected_files": ["ui/app.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q19",
+      "category": "code_explanation",
+      "question": "What does the heuristic_plan function do when the local LLM returns invalid JSON?",
+      "gold_keywords": ["heuristic_plan", "INTENT_KEYWORDS", "fallback"],
+      "expected_files": ["services/planner_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q20",
+      "category": "code_generation",
+      "question": "Write a Python function named rrf_score(rank, k=60) that returns 1.0 / (k + rank). Output only a Python code block.",
+      "gold_keywords": ["rrf_score"],
+      "expected_files": [],
+      "must_cite": false,
+      "code_test": "rrf_score"
+    },
+    {
+      "id": "Q21",
+      "category": "code_generation",
+      "question": "Write a Python function named bound_text(text, limit) that collapses whitespace and if longer than limit returns the first limit-1 characters plus an ellipsis character …. Output only a Python code block.",
+      "gold_keywords": ["bound_text"],
+      "expected_files": [],
+      "must_cite": false,
+      "code_test": "bound_text"
+    },
+    {
+      "id": "Q22",
+      "category": "code_generation",
+      "question": "Write a Python function named chunk_step(chunk_size, overlap) that returns max(1, chunk_size - overlap). Output only a Python code block.",
+      "gold_keywords": ["chunk_step"],
+      "expected_files": [],
+      "must_cite": false,
+      "code_test": "chunk_step"
+    },
+    {
+      "id": "Q23",
+      "category": "refactoring",
+      "question": "Suggest a concrete improvement to services/citation_service.py for deduplicating evidence without changing the [Source N] contract.",
+      "gold_keywords": ["deduplicat", "CitationService", "key"],
+      "expected_files": ["services/citation_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q24",
+      "category": "rag_qa",
+      "question": "According to retrieved chunks, how should answers be cited in this application?",
+      "gold_keywords": ["Source", "Page", "Section"],
+      "expected_files": ["llm/prompt_builder.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q25",
+      "category": "repo_multi_file",
+      "question": "Which FastAPI lifespan steps initialize the RAG engine and why is that not done at import time?",
+      "gold_keywords": ["lifespan", "ingest_all", "OllamaLLM"],
+      "expected_files": ["api/main.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q26",
+      "category": "hallucination_probe",
+      "question": "Quote the exact Ollama host default and embedding model name from config.py as used by this repo.",
+      "gold_keywords": ["localhost:11434", "all-MiniLM-L6-v2"],
+      "expected_files": ["config.py"],
+      "must_cite": true
+    }
+  ]
+}
