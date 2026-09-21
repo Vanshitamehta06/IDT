@@ -66,6 +66,10 @@ _DEFAULTS = {
     "paper_pick_mode": False,     # True while single-paper picker is shown
     "paper_pick_action": "",      # which action triggered the picker
     "compare_selected": [],       # list of selected filenames
+    # Eval custom question / guardrail / output tests
+    "_cq_last": None,
+    "_gr_last": None,
+    "_ot_last": None,
 }
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -1381,9 +1385,10 @@ if st.session_state.page == "Research":
 elif st.session_state.page == "Evaluate":
     st.markdown("## Model evaluation")
     st.markdown(
-        "Run the built-in evaluation on up to 26 representative research questions "
-        "across all three models — same questions, same knowledge base, same prompts. "
-        "Results are measured with deterministic metrics, not LLM-judge scores."
+        "Run the built-in evaluation on **33 representative questions** across 16 categories "
+        "and all three models — same questions, same knowledge base, same prompts. "
+        "Results are measured with deterministic metrics, not LLM-judge scores. "
+        "Progress is saved after every question so a laptop sleep/restart loses nothing."
     )
 
     # Metric definitions
@@ -1411,7 +1416,7 @@ elif st.session_state.page == "Evaluate":
             value="llama3:8b,codellama:7b,starcoder2:3b",
         )
     with eval_col2:
-        limit = st.number_input("Max questions", min_value=1, max_value=26, value=5)
+        limit = st.number_input("Max questions", min_value=1, max_value=33, value=33)
 
     run_eval = st.button("Run evaluation", type="primary")
 
@@ -1423,9 +1428,18 @@ elif st.session_state.page == "Evaluate":
         total = status_data.get("total", 1) or 1
         model_now = status_data.get("model", "")
         item_now = status_data.get("item_id", "")
+        items_per_model = status_data.get("items_per_model", total)
+        model_idx = status_data.get("current_model_index", 0)
+        n_models = max(1, total // max(items_per_model, 1))
+        # Show per-model progress
+        model_done = done % max(items_per_model, 1)
         pct = int(done / total * 100)
-        st.progress(pct / 100, text=f"{phase} — {model_now} · {item_now} ({done}/{total})")
-        st.info("Evaluation running. Results will appear here when complete.")
+        progress_text = (
+            f"{phase} — Model {model_idx+1}/{n_models}: {model_now} · "
+            f"Q{model_done+1}/{items_per_model} ({item_now}) — overall {done}/{total}"
+        )
+        st.progress(pct / 100, text=progress_text)
+        st.info("Evaluation running. Refresh the page to check progress. Results will appear when complete.")
         time.sleep(3)
         st.rerun()
 
@@ -1492,6 +1506,526 @@ elif st.session_state.page == "Evaluate":
         st.markdown("### Visual analysis")
         charts = results.get("charts") or {}
         render_eval_charts(charts)
+
+        # ── Category-wise metric breakdown (per-category expanders) ─────────
+        st.markdown("### Category-wise evaluation results")
+        st.caption(
+            "Click ▶ next to a category to see bar charts comparing all models across "
+            "all metrics. Hallucination ↓ and Latency ↓ — lower is better."
+        )
+        _cat_full = charts.get("category_full_breakdown") or {}
+        if _cat_full:
+            # Canonical category display names and descriptions
+            _CAT_META = {
+                "code_explanation":      ("Code Explanation",        "Questions asking what a specific function/module does"),
+                "code_retrieval":        ("Code Retrieval",          "Questions asking which file/component handles a task"),
+                "dependency_understanding": ("Dependency Understanding", "Questions about which components depend on each other"),
+                "bug_analysis":          ("Bug Analysis",            "Questions asking what could cause incorrect behaviour"),
+                "code_generation":       ("Code Generation",         "Questions asking the model to write code"),
+                "refactoring":           ("Refactoring",             "Questions asking for improvement suggestions"),
+                "rag_qa":                ("RAG-based QA",            "Questions answered from the indexed research papers"),
+                "analysis":              ("Paper Analysis",          "Deep analysis of methodology and structure"),
+                "comparison":            ("Paper Comparison",        "Side-by-side comparison of papers"),
+                "gap_analysis":          ("Gap Analysis",            "Finding open research problems"),
+                "recommendation":        ("Recommendation",          "Suggesting next papers to read"),
+                "discovery":             ("Literature Discovery",    "Finding related literature"),
+                "repo_multi_file":       ("Repository Multi-file",   "Questions spanning multiple source files"),
+                "repo_retrieval":        ("Repo Retrieval",          "Specific retrieval from the codebase"),
+                "hallucination_probe":   ("Hallucination Probe",     "Testing whether the model fabricates facts"),
+            }
+
+            # Collect all categories in results
+            _all_cats_set: list[str] = []
+            for _m_cats in _cat_full.values():
+                for _cat in _m_cats:
+                    if _cat not in _all_cats_set:
+                        _all_cats_set.append(_cat)
+            # Sort: canonical order first, then alphabetical for unknown
+            _CANONICAL_ORDER = list(_CAT_META.keys())
+            _all_cats_set.sort(
+                key=lambda c: (_CANONICAL_ORDER.index(c) if c in _CANONICAL_ORDER else 999, c)
+            )
+
+            _models = list(_cat_full.keys())
+
+            _METRICS = [
+                ("correctness",        "Correctness",     "#6ee7b7", True),
+                ("relevance",          "Relevance",       "#60a5fa", True),
+                ("retrieval_quality",  "Retrieval",       "#a78bfa", True),
+                ("hallucination_rate", "Hallucination ↓", "#ff8b6a", False),  # lower=better → invert
+                ("latency_ms",         "Latency ms ↓",   "#fbbf24", False),
+            ]
+
+            # Summary table: all categories × all models, correctness column
+            _sum_headers = ["Category", "n"] + _models
+            _sum_rows = []
+            for _cat in _all_cats_set:
+                _display = _CAT_META.get(_cat, (_cat.replace("_", " ").title(), ""))[0]
+                _n = next(
+                    (int(_cat_full[_m].get(_cat, {}).get("n", 0))
+                     for _m in _models if _cat in _cat_full.get(_m, {})),
+                    0,
+                )
+                _row = [_display, str(_n)]
+                for _m in _models:
+                    _v = (_cat_full.get(_m) or {}).get(_cat, {}).get("correctness")
+                    _row.append(f"{_v:.3f}" if _v is not None else "—")
+                _sum_rows.append(_row)
+
+            st.markdown("**Correctness overview — all categories**")
+            st.markdown(html_table(_sum_headers, _sum_rows), unsafe_allow_html=True)
+            st.markdown("---")
+
+            # Per-category expanders with full metric bar charts
+            st.markdown("**Per-category detail — click ▶ to expand**")
+            for _cat in _all_cats_set:
+                _display, _desc = _CAT_META.get(_cat, (_cat.replace("_", " ").title(), ""))
+                # Show correctness values as a quick summary in the expander header
+                _corr_preview = "  ·  ".join(
+                    f"{_m}: {(_cat_full.get(_m) or {}).get(_cat, {}).get('correctness', 0):.2f}"
+                    for _m in _models
+                    if (_cat_full.get(_m) or {}).get(_cat)
+                )
+                _n_q = next(
+                    (int(_cat_full[_m].get(_cat, {}).get("n", 0))
+                     for _m in _models if _cat in _cat_full.get(_m, {})),
+                    0,
+                )
+                with st.expander(f"▶  {_display}  ({_n_q} questions)  —  Correct: {_corr_preview}"):
+                    if _desc:
+                        st.caption(_desc)
+
+                    # Full metrics table for this category
+                    _tbl_headers = ["Metric", "Direction"] + _models
+                    _tbl_rows = []
+                    for _mk, _ml, _color, _higher in _METRICS:
+                        _direction_label = "↑ higher" if _higher else "↓ lower"
+                        _tr = [_ml, _direction_label]
+                        for _m in _models:
+                            _v = (_cat_full.get(_m) or {}).get(_cat, {}).get(_mk)
+                            _tr.append(f"{_v:.3f}" if _v is not None else "—")
+                        _tbl_rows.append(_tr)
+                    st.markdown(html_table(_tbl_headers, _tbl_rows), unsafe_allow_html=True)
+
+                    # Bar charts: one per metric, all models side by side
+                    for _mk, _ml, _color, _higher in _METRICS:
+                        st.markdown(f"**{_ml}**")
+                        # Gather values for this metric across all models
+                        _vals = {
+                            _m: (_cat_full.get(_m) or {}).get(_cat, {}).get(_mk)
+                            for _m in _models
+                        }
+                        _vals = {m: v for m, v in _vals.items() if v is not None}
+                        if not _vals:
+                            st.caption("No data for this metric in this category.")
+                            continue
+                        _max_v = max(_vals.values()) or 1
+                        for _m, _v in _vals.items():
+                            # For lower-is-better metrics, invert bar so shorter = better visually
+                            _bar_pct = int((_v / _max_v) * 100) if _higher else int((1 - _v / max(_max_v, 1)) * 100)
+                            # Use fill pct for display but show actual value
+                            _fill_pct = int((_v / _max_v) * 100)
+                            _bar = (
+                                f'<div class="bar-row">'
+                                f'<span class="bar-model">{_esc(_m)}</span>'
+                                f'<div class="bar-track">'
+                                f'<div class="bar-fill" style="width:{_fill_pct}%;background:{_color}"></div>'
+                                f'</div>'
+                                f'<span class="bar-val">{_v:.3f}</span>'
+                                f'</div>'
+                            )
+                            st.markdown(_bar, unsafe_allow_html=True)
+                    st.markdown("")
+
+            # Best / worst model summary
+            if len(_models) > 1:
+                st.markdown("---")
+                st.markdown("**Best model per category — correctness**")
+                _best_rows = []
+                for _cat in _all_cats_set:
+                    _display = _CAT_META.get(_cat, (_cat.replace("_", " ").title(), ""))[0]
+                    _scores = {
+                        _m: (_cat_full.get(_m) or {}).get(_cat, {}).get("correctness")
+                        for _m in _models
+                    }
+                    _scores = {m: v for m, v in _scores.items() if v is not None}
+                    if not _scores:
+                        continue
+                    _best_m  = max(_scores, key=lambda x: _scores[x])
+                    _worst_m = min(_scores, key=lambda x: _scores[x])
+                    _gap = round(_scores[_best_m] - _scores[_worst_m], 3)
+                    _best_rows.append([
+                        _display,
+                        f"{_best_m} ({_scores[_best_m]:.3f})",
+                        f"{_worst_m} ({_scores[_worst_m]:.3f})",
+                        f"{_gap:.3f}",
+                    ])
+                if _best_rows:
+                    st.markdown(
+                        html_table(["Category", "Best model", "Weakest model", "Gap"], _best_rows),
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info("Run an evaluation to see category-wise results. Results will appear here after the run.")
+
+        # ── Category interpretations ─────────────────────────────────────────
+        _cat_interps = charts.get("category_interpretations") or {}
+        if _cat_interps:
+            st.markdown("### Why models perform differently per category")
+            st.caption("Rule-based interpretation of each model's performance on every question category.")
+            for _cat in _all_cats_set if _cat_full else sorted(_cat_interps.keys()):
+                _display = _CAT_META.get(_cat, (_cat.replace("_", " ").title(), ""))[0] if _cat_full else _cat
+                _overall_text = (_cat_interps.get(_cat) or {}).get("_overall", "")
+                _model_texts  = {m: t for m, t in (_cat_interps.get(_cat) or {}).items() if m != "_overall"}
+                if not _model_texts:
+                    continue
+                with st.expander(f"📊  {_display} — interpretation"):
+                    if _overall_text:
+                        st.markdown(_overall_text)
+                        st.markdown("---")
+                    for _m, _txt in _model_texts.items():
+                        st.markdown(f"**{_m}**")
+                        st.markdown(_txt)
+                        st.markdown("")
+
+        # ── Custom question evaluator ─────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Ask your own question — evaluate all models")
+        st.caption(
+            "Type any question and evaluate how all 3 models answer it on the same knowledge base. "
+            "Each answer is scored with output tests (grounding, relevance, citation, hallucination)."
+        )
+        _cq_models_raw = st.text_input(
+            "Models to evaluate",
+            value="llama3:8b,codellama:7b,starcoder2:3b",
+            key="cq_models",
+        )
+        _custom_q = st.text_area(
+            "Your question",
+            placeholder="e.g. What is the main contribution of the indexed paper?",
+            height=80,
+            key="cq_input",
+        )
+        if st.button("Evaluate this question", type="primary", key="cq_run"):
+            _cq = (_custom_q or "").strip()
+            if not _cq:
+                st.warning("Enter a question first.")
+            else:
+                _cq_models = [m.strip() for m in _cq_models_raw.split(",") if m.strip()]
+                with st.spinner(f"Evaluating {len(_cq_models)} models… (this takes 1–3 min)"):
+                    try:
+                        _cq_resp = httpx.post(
+                            f"{API_URL}/eval/ask",
+                            json={"question": _cq, "models": _cq_models},
+                            timeout=httpx.Timeout(connect=8.0, read=900.0, write=30.0, pool=10.0),
+                        )
+                        _cq_resp.raise_for_status()
+                        _cq_data = _cq_resp.json()
+                        st.session_state["_cq_last"] = _cq_data
+                    except Exception as _exc:
+                        st.error(f"Evaluation failed: {_exc}")
+                        st.session_state["_cq_last"] = None
+
+        _cq_data = st.session_state.get("_cq_last")
+        if _cq_data:
+            st.markdown(f"**Question:** {_cq_data.get('question','')}")
+            _cq_summary = _cq_data.get("summary") or {}
+            _cq_rows_raw = _cq_data.get("rows") or []
+
+            # Summary metrics table
+            _cq_hdr = ["Model", "Correct", "Relevant", "Retrieval", "Hallucin ↓", "Latency ms", "OT Pass rate", "OT Verdict"]
+            _cq_tbl = []
+            for _m, _s in _cq_summary.items():
+                _ot = _s.get("output_tests") or {}
+                _cq_tbl.append([
+                    _m,
+                    f"{_s.get('correctness', 0):.3f}",
+                    f"{_s.get('relevance', 0):.3f}",
+                    f"{_s.get('retrieval_quality', 0):.3f}",
+                    f"{_s.get('hallucination_rate', 0):.3f}",
+                    f"{_s.get('latency_ms', 0):.0f}",
+                    f"{_ot.get('pass_rate', 0):.0%}",
+                    _ot.get("verdict", "—"),
+                ])
+            st.markdown(html_table(_cq_hdr, _cq_tbl), unsafe_allow_html=True)
+
+            # Per-model answer + output test detail
+            for _row in _cq_rows_raw:
+                _m = _row.get("model", "")
+                _ot = (_cq_summary.get(_m) or {}).get("output_tests") or {}
+                _explanation = (_cq_summary.get(_m) or {}).get("explanation") or ""
+                _verdict_icon = "✓" if _ot.get("verdict") == "PASS" else ("⚠" if _ot.get("verdict") == "WARN" else "✗")
+                with st.expander(f"{_verdict_icon}  {_m}  —  {_ot.get('verdict','—')}  ({_ot.get('pass_rate',0):.0%} tests passed)"):
+
+                    # ── Why this model answered this way ─────────────────────
+                    if _explanation:
+                        st.markdown("#### Why this model performed this way")
+                        st.markdown(_explanation)
+                        st.markdown("---")
+
+                    st.markdown("**Answer:**")
+                    st.write((_row.get("answer") or "")[:1000])
+
+                    # Output test results as mini table
+                    _ot_rows = _ot.get("results") or []
+                    if _ot_rows:
+                        st.markdown("**Output tests:**")
+                        _ot_tbl = []
+                        for _t in _ot_rows:
+                            _icon = "✓" if _t["passed"] else "✗"
+                            _ot_tbl.append([
+                                _icon + " " + _t["test_id"],
+                                _t["name"],
+                                _t["category"],
+                                f"{_t['score']:.3f}",
+                                _t["severity"],
+                                _t["detail"][:80],
+                            ])
+                        st.markdown(
+                            html_table(["", "Test", "Category", "Score", "Severity", "Detail"], _ot_tbl),
+                            unsafe_allow_html=True,
+                        )
+
+                    # Bar chart: output test scores
+                    st.markdown("**Test scores:**")
+                    for _t in _ot_rows:
+                        _clr = "#6ee7b7" if _t["passed"] else "#ff8b6a"
+                        _pct = int(_t["score"] * 100)
+                        st.markdown(
+                            f'<div class="bar-row">'
+                            f'<span class="bar-model">{_esc(_t["test_id"])} {_esc(_t["name"][:30])}</span>'
+                            f'<div class="bar-track"><div class="bar-fill" style="width:{_pct}%;background:{_clr}"></div></div>'
+                            f'<span class="bar-val">{_t["score"]:.3f}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+        # ── Guardrail demo ────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Guardrail evaluation — 5 categories × 5 questions × 3 models")
+        st.caption(
+            "25 guardrail questions across 5 categories. "
+            "**Run guardrail tests** for instant input-level checks (no LLM needed). "
+            "**Evaluate models on guardrails** runs all questions through all 3 models and scores each — takes ~5 min."
+        )
+
+        _gc_models_raw = st.text_input("Models", value="llama3:8b,codellama:7b,starcoder2:3b", key="gc_models")
+        if st.button("Evaluate models on guardrails", type="primary", key="gr_eval_run"):
+            _gc_mods = [m.strip() for m in _gc_models_raw.split(",") if m.strip()]
+            with st.spinner(f"Evaluating {len(_gc_mods)} models × 30 questions… (~8 min)"):
+                try:
+                    _ge_resp = httpx.post(
+                        f"{API_URL}/eval/guardrail-eval",
+                        json={"models": _gc_mods},
+                        timeout=httpx.Timeout(connect=8.0, read=900.0, write=30.0, pool=10.0),
+                    )
+                    _ge_resp.raise_for_status()
+                    st.session_state["_ge_last"] = _ge_resp.json()
+                    # Also run the fast input checks to populate _gr_last for the category cards
+                    try:
+                        _gr_resp = httpx.get(f"{API_URL}/eval/guardrail-tests", timeout=30.0)
+                        _gr_resp.raise_for_status()
+                        st.session_state["_gr_last"] = _gr_resp.json()
+                    except Exception:
+                        pass
+                except Exception as _exc:
+                    st.error(f"Evaluation failed: {_exc}")
+                    st.session_state["_ge_last"] = None
+
+        _gr_data = st.session_state.get("_gr_last")   # populated automatically after eval
+        _ge_data = st.session_state.get("_ge_last")   # full model evaluation
+        # Import question list for per-question detail rendering
+        try:
+            from eval.guardrail_tests import GUARDRAIL_QUESTIONS as _GQ_LIST
+        except Exception:
+            _GQ_LIST = []
+
+        # ── Overall summary ───────────────────────────────────────────────────
+        if _ge_data:
+            st.markdown("**Model evaluation summary:**")
+            _ge_models = _ge_data.get("models") or []
+            _ge_bm = _ge_data.get("by_model") or {}
+            _ge_tbl = [
+                [m, f"{_ge_bm[m].get('safe',0)}/{_ge_bm[m].get('total',0)}", f"{_ge_bm[m].get('pass_rate',0):.0%}"]
+                for m in _ge_models if m in _ge_bm
+            ]
+            if _ge_tbl:
+                st.markdown(html_table(["Model", "Safe responses", "Pass rate"], _ge_tbl), unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ── 5 category cards ──────────────────────────────────────────────────
+        _GC_STATIC = [
+            ("GC1", "🛡",  "Input Guardrails",                "#6ee7b7", "Injection, PII, toxicity, jailbreak, length"),
+            ("GC2", "📤", "Output Guardrails",                "#60a5fa", "Grounding, blank answers, citation, refusal, format"),
+            ("GC3", "🗄",  "Retrieval & Data",                "#a78bfa", "Empty index, wrong source, irrelevant context, citations, stale data"),
+            ("GC4", "🤖", "Agent & Tool",                     "#fbbf24", "Tool misuse, loops, confirmation, scope, multi-step"),
+            ("GC5", "⚖",  "Ethical, Brand & Legal",          "#f472b6", "Bias, copyright, harmful content, disclaimers, tone"),
+            ("GC6", "⚙",  "Infrastructure & Operational",    "#fb923c", "Rate limiting, token budget, latency timeout, fallback, data residency"),
+        ]
+
+        for _gc_id, _gc_icon, _gc_name, _gc_color, _gc_desc in _GC_STATIC:
+            # Fast check summary
+            _by_type = (_gr_data or {}).get("by_type") or {}
+            _gc_block = _by_type.get(_gc_id) or {}
+            _tp = _gc_block.get("tests_passed", 0)
+            _tt = _gc_block.get("tests_total", 0)
+            _gv = _gc_block.get("verdict", "")
+
+            # Full eval summary
+            _cat_sum = ((_ge_data or {}).get("category_summaries") or {}).get(_gc_id) or {}
+            _ge_models_list = (_ge_data or {}).get("models") or []
+
+            # Build expander header
+            _header_parts = [f"{_gc_icon}  **{_gc_name}**  — {_gc_desc}"]
+            if _gr_data and _tt:
+                _badge_c = "#6ee7b7" if _gv == "PASS" else ("#fbbf24" if _gv == "WARN" else "#ff8b6a")
+                _header_parts.append(f"  |  Input checks: {_tp}/{_tt}")
+            if _ge_data and _cat_sum:
+                _bm = _cat_sum.get("best_model", "")
+                _header_parts.append(f"  |  Best model: {_bm}")
+
+            with st.expander("  ".join(_header_parts)):
+                st.caption(_gc_desc)
+
+                # ── Input-level results table ─────────────────────────────────
+                _cases = _gc_block.get("cases") or []
+                if _cases:
+                    st.markdown("**Input guardrail checks (no LLM):**")
+                    _ic_rows = []
+                    for _c in _cases:
+                        _v = "✓" if _c.get("test_passed") else "✗"
+                        _ic_rows.append([
+                            _v + " " + _c.get("id",""),
+                            _c.get("name","")[:40],
+                            _c.get("question","")[:55],
+                            _c.get("detail","")[:60],
+                        ])
+                    st.markdown(html_table(["", "Check", "Input", "Result"], _ic_rows), unsafe_allow_html=True)
+
+                # ── Multi-model comparison ────────────────────────────────────
+                _ms = _cat_sum.get("model_summaries") or {}
+                if _ms:
+                    st.markdown("**Multi-model comparison (all 5 questions):**")
+                    _mm_rows = []
+                    for _m in _ge_models_list:
+                        _m_data = _ms.get(_m) or {}
+                        _mm_rows.append([
+                            _m,
+                            f"{_m_data.get('safe',0)}/{_m_data.get('total',0)}",
+                            f"{_m_data.get('pass_rate',0):.0%}",
+                            f"{_m_data.get('avg_grounding',0):.2f}",
+                        ])
+                    st.markdown(html_table(["Model", "Safe/Total", "Pass %", "Avg Grounding"], _mm_rows), unsafe_allow_html=True)
+
+                    # Bar charts per model
+                    st.markdown("**Pass rate comparison:**")
+                    for _m in _ge_models_list:
+                        _pr = (_ms.get(_m) or {}).get("pass_rate", 0)
+                        _pct = int(_pr * 100)
+                        _clr = "#6ee7b7" if _pct >= 80 else ("#fbbf24" if _pct >= 50 else "#ff8b6a")
+                        st.markdown(
+                            f'<div class="bar-row"><span class="bar-model">{_esc(_m)}</span>'
+                            f'<div class="bar-track"><div class="bar-fill" style="width:{_pct}%;background:{_clr}"></div></div>'
+                            f'<span class="bar-val">{_pct}%</span></div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # Per-question per-model detail
+                    st.markdown("**Per-question model responses:**")
+                    _cat_questions = [q for q in _GQ_LIST if q["category_id"] == _gc_id]
+                    for _q in _cat_questions:
+                        _qid = _q["id"]
+                        with st.expander(f"  {_qid}: {_q.get('name','')} — `{(_q.get('question',''))[:60]}`"):
+                            _qc1, _qc2 = st.columns(2)
+                            with _qc1:
+                                st.markdown("**❌ Without guardrail:**")
+                                st.markdown(f'<div style="background:#2a0a0a;border:1px solid #ff8b6a;border-radius:8px;padding:0.6rem;color:#ffcccc;font-size:0.82rem;">{_esc(_q.get("without_guardrail",""))}</div>', unsafe_allow_html=True)
+                            with _qc2:
+                                st.markdown("**✅ With guardrail:**")
+                                st.markdown(f'<div style="background:#0a2a0a;border:1px solid #6ee7b7;border-radius:8px;padding:0.6rem;color:#ccffcc;font-size:0.82rem;">{_esc(_q.get("with_guardrail",""))}</div>', unsafe_allow_html=True)
+
+                            # Model answer comparison
+                            if _ms:
+                                for _m in _ge_models_list:
+                                    _m_results = (_ms.get(_m) or {}).get("results") or []
+                                    _q_result = next((r for r in _m_results if r.get("id") == _qid), None)
+                                    if _q_result:
+                                        _safe_icon = "✓" if _q_result.get("safe") else "✗"
+                                        st.markdown(f"**{_m}** — {_safe_icon} {_q_result.get('verdict','—')}  |  {_q_result.get('detail','')}")
+                                        if _q_result.get("answer_excerpt"):
+                                            st.caption(f"Answer: {_q_result['answer_excerpt'][:180]}")
+
+                    # ── Recommendation ────────────────────────────────────────
+                    _rec = _cat_sum.get("recommendation", "")
+                    if _rec:
+                        st.markdown("---")
+                        st.markdown("**📌 Recommendation:**")
+                        st.markdown(
+                            f'<div style="background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.3);border-radius:10px;padding:0.8rem;color:#e2e8f0;">{_esc(_rec)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                elif not _gr_data and not _ge_data:
+                    st.info("Click **Run guardrail tests** or **Evaluate models on guardrails** above to see results.")
+
+        # ── Output testing against latest eval ───────────────────────────────
+        st.markdown("---")
+        st.markdown("### AI output testing — latest eval results")
+        st.caption(
+            "Runs 9 structured output tests against every answer in the latest evaluation. "
+            "Tests check: blank answers, relevance, grounding, hallucination, citations, "
+            "length, keyword coverage, and prompt leakage."
+        )
+        if st.button("Run output tests on latest eval", key="ot_run"):
+            with st.spinner("Running output tests…"):
+                try:
+                    _ot_resp = httpx.get(f"{API_URL}/eval/output-tests", timeout=60.0)
+                    _ot_resp.raise_for_status()
+                    st.session_state["_ot_last"] = _ot_resp.json()
+                except Exception as _exc:
+                    st.error(f"Output tests failed: {_exc}")
+                    st.session_state["_ot_last"] = None
+
+        _ot_data = st.session_state.get("_ot_last")
+        if _ot_data and _ot_data.get("available"):
+            _ot_by_model = _ot_data.get("by_model") or {}
+            # Summary table
+            _ot_hdr = ["Model", "Total Qs", "Tests passed", "Tests failed", "Pass rate"]
+            _ot_tbl = []
+            for _m, _block in _ot_by_model.items():
+                _n = _block.get("total", 0)
+                _p = _block.get("passed", 0)
+                _f = _block.get("failed", 0)
+                _r = _block.get("pass_rate", 0)
+                _ot_tbl.append([_m, str(_n), str(_p), str(_f), f"{_r:.0%}"])
+            st.markdown(html_table(_ot_hdr, _ot_tbl), unsafe_allow_html=True)
+
+            # Per-model drill-down
+            for _m, _block in _ot_by_model.items():
+                with st.expander(f"Output tests — {_m}  ({_block.get('pass_rate',0):.0%} pass rate)"):
+                    _items = _block.get("items") or []
+                    _item_tbl = []
+                    for _item in _items:
+                        _v = _item.get("verdict", "")
+                        _icon = "✓" if _v == "PASS" else ("⚠" if _v == "WARN" else "✗")
+                        _crit = ", ".join(_item.get("critical_failures") or []) or "—"
+                        _item_tbl.append([
+                            _item.get("id", ""),
+                            _item.get("category", ""),
+                            (_item.get("question") or "")[:55],
+                            f"{_icon} {_v}",
+                            f"{_item.get('pass_rate', 0):.0%}",
+                            _crit[:50],
+                        ])
+                    st.markdown(
+                        html_table(
+                            ["ID", "Category", "Question", "Verdict", "Pass %", "Critical failures"],
+                            _item_tbl,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+        elif _ot_data and not _ot_data.get("available"):
+            st.info("Run the main evaluation first, then click 'Run output tests on latest eval'.")
 
         # Per-model detail
         st.markdown("### Per-model item detail")

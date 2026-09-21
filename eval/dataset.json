@@ -141,7 +141,7 @@
     },
     {
       "id": "Q17",
-      "category": "dependency",
+      "category": "dependency_understanding",
       "question": "Which modules import OllamaLLM and how is response.content read?",
       "gold_keywords": ["response.message.content", "OllamaLLM"],
       "expected_files": ["llm/llm_model.py"],
@@ -219,6 +219,63 @@
       "category": "hallucination_probe",
       "question": "Quote the exact Ollama host default and embedding model name from config.py as used by this repo.",
       "gold_keywords": ["localhost:11434", "all-MiniLM-L6-v2"],
+      "expected_files": ["config.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q27",
+      "category": "code_explanation",
+      "question": "What does the heuristic_plan function do when the local LLM returns invalid JSON?",
+      "gold_keywords": ["heuristic_plan", "INTENT_KEYWORDS", "fallback", "json"],
+      "expected_files": ["services/planner_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q28",
+      "category": "code_retrieval",
+      "question": "Which file handles the embedding of queries and documents in this application?",
+      "gold_keywords": ["embed_query", "embed_texts", "sentence-transformers", "embeddings"],
+      "expected_files": ["vector_db/embeddings.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q29",
+      "category": "dependency_understanding",
+      "question": "Which components use the CitationService and what do they pass to it?",
+      "gold_keywords": ["CitationService", "register_chunk", "register_paper", "orchestrator"],
+      "expected_files": ["services/orchestrator.py", "services/citation_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q30",
+      "category": "bug_analysis",
+      "question": "What could cause the /query endpoint to return a 500 error even when Ollama is running?",
+      "gold_keywords": ["500", "error", "orchestrator", "timeout", "UnboundLocalError"],
+      "expected_files": ["api/main.py", "services/orchestrator.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q31",
+      "category": "code_generation",
+      "question": "Write a Python function named keyword_hit_rate(text, keywords) that returns the fraction of keywords found in the text (case-insensitive). Output only a Python code block.",
+      "gold_keywords": ["keyword_hit_rate"],
+      "expected_files": [],
+      "must_cite": false,
+      "code_test": "keyword_hit_rate"
+    },
+    {
+      "id": "Q32",
+      "category": "refactoring",
+      "question": "Suggest a concrete improvement to the evidence_block method in services/citation_service.py to avoid truncating important content.",
+      "gold_keywords": ["evidence_block", "snippet", "truncat", "citation"],
+      "expected_files": ["services/citation_service.py"],
+      "must_cite": true
+    },
+    {
+      "id": "Q33",
+      "category": "rag_qa",
+      "question": "What does the project documentation say about how chunking is configured and what the default chunk size is?",
+      "gold_keywords": ["CHUNK_SIZE", "512", "CHUNK_OVERLAP", "100", "config"],
       "expected_files": ["config.py"],
       "must_cite": true
     }

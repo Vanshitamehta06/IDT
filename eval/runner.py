@@ -1,9 +1,18 @@
-"""Three-model evaluation runner. Same app, prompts, questions, and knowledge base."""
+"""Three-model evaluation runner with resume support.
+
+Persistence
+-----------
+After every single question the partial results are flushed to
+eval/results/partial_{model}.json so that a laptop sleep / crash / restart
+loses at most one question.  On the next run, already-completed questions are
+loaded from the partial file and skipped — only the remaining ones are run.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,8 +25,11 @@ from llm.llm_model import OllamaLLM
 from services.orchestrator import ResearchOrchestrator
 from services.rag_service import RAGService
 
+logger = logging.getLogger(__name__)
 DATASET_PATH = ROOT_DIR / "eval" / "dataset.json"
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def load_dataset() -> dict[str, Any]:
     return json.loads(DATASET_PATH.read_text(encoding="utf-8"))
@@ -43,6 +55,55 @@ def list_local_models(llm: OllamaLLM) -> set[str]:
 def _retrieved_from_inspector(inspector: dict[str, Any]) -> list[dict[str, Any]]:
     return list(inspector.get("retrieved_chunks") or [])
 
+
+def _partial_path(model: str) -> Path:
+    """Path to the per-model partial results file."""
+    safe = model.replace(":", "_").replace("/", "_")
+    return EVAL_RESULTS_DIR / f"partial_{safe}.json"
+
+
+def _load_partial(model: str, limit: int | None) -> dict[str, Any]:
+    """Load any previously saved partial results for this model.
+
+    Returns a dict mapping question id → completed row.
+    Clears the partial file if the saved item_count differs from the
+    current limit (run configuration changed).
+    """
+    path = _partial_path(model)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        saved_limit = data.get("item_count")
+        if limit is not None and saved_limit != limit:
+            # Different limit → old partial is stale, start fresh
+            path.unlink(missing_ok=True)
+            return {}
+        rows = data.get("rows") or []
+        return {r["id"]: r for r in rows}
+    except Exception:
+        return {}
+
+
+def _save_partial(model: str, rows: list[dict[str, Any]], item_count: int) -> None:
+    """Flush completed rows to disk after every question."""
+    try:
+        EVAL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        _partial_path(model).write_text(
+            json.dumps({"model": model, "item_count": item_count, "rows": rows},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to save partial results for %s: %s", model, exc)
+
+
+def _clear_partials(models: list[str]) -> None:
+    for model in models:
+        _partial_path(model).unlink(missing_ok=True)
+
+
+# ── Single-item runner ────────────────────────────────────────────────────────
 
 async def run_one(
     orchestrator: ResearchOrchestrator,
@@ -96,6 +157,8 @@ async def run_one(
     }
 
 
+# ── Summarise ────────────────────────────────────────────────────────────────
+
 def summarize_model(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {}
@@ -120,14 +183,15 @@ def summarize_model(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "latency_ms_mean": round(sum((r.get("latency_ms") or 0) for r in rows) / n, 2),
         "tokens_mean": round(sum((r.get("tokens") or {}).get("total") or 0 for r in rows) / n, 2),
         "tokens_per_sec_mean": round(
-            sum((r.get("tokens") or {}).get("tokens_per_sec") or 0 for r in rows) / n,
-            3,
+            sum((r.get("tokens") or {}).get("tokens_per_sec") or 0 for r in rows) / n, 3,
         ),
         "rss_mb_mean": round(sum(rss) / n, 2),
         "cpu_percent_mean": round(sum(cpu) / n, 2),
         "gpu_memory_used_mb_mean": round(sum(gpu_used) / len(gpu_used), 2) if gpu_used else None,
     }
 
+
+# ── Main evaluation runner ────────────────────────────────────────────────────
 
 async def run_evaluation(
     models: list[str] | None = None,
@@ -153,6 +217,16 @@ async def run_evaluation(
     by_model: dict[str, Any] = {}
     skipped: list[str] = []
 
+    total_items = len(items)
+    active_models = [
+        m for m in selected
+        if not (installed and m not in installed
+                and m.split(":")[0] not in installed
+                and not any(str(x).startswith(m) or str(x).startswith(m.split(":")[0]) for x in installed))
+    ]
+    grand_total = total_items * max(1, len(active_models))
+    completed_so_far = 0
+
     for model in selected:
         base = model.split(":")[0]
         if installed and model not in installed and base not in installed and not any(
@@ -161,23 +235,62 @@ async def run_evaluation(
             skipped.append(model)
             by_model[model] = {"error": "model_not_installed", "installed_hint": sorted(installed)[:12]}
             continue
+
+        # Load any partial results saved before a previous sleep/crash
+        cached: dict[str, Any] = _load_partial(model, total_items)
+        if cached:
+            logger.info("Resuming %s: %d/%d questions already done", model, len(cached), total_items)
+
         llm = OllamaLLM(model=model)
         orchestrator = ResearchOrchestrator(llm, rag)
+
+        # Restore previously completed rows in original order
         rows: list[dict[str, Any]] = []
+        for item in items:
+            if item["id"] in cached:
+                rows.append(cached[item["id"]])
+
         for idx, item in enumerate(items, start=1):
-            if progress_cb:
-                progress_cb(
-                    {
-                        "phase": "running",
+            # Skip already-completed questions (resume support)
+            if item["id"] in cached:
+                completed_so_far += 1
+                if progress_cb:
+                    progress_cb({
+                        "phase": "running (resumed)",
                         "model": model,
                         "item_id": item.get("id"),
-                        "done": idx - 1,
-                        "total": len(items) * max(1, len(selected) - len(skipped)),
-                    }
-                )
+                        "done": completed_so_far,
+                        "total": grand_total,
+                        "current_model_index": selected.index(model) if model in selected else 0,
+                        "items_per_model": total_items,
+                        "resumed": True,
+                    })
+                continue
+
+            if progress_cb:
+                progress_cb({
+                    "phase": "running",
+                    "model": model,
+                    "item_id": item.get("id"),
+                    "done": completed_so_far,
+                    "total": grand_total,
+                    "current_model_index": selected.index(model) if model in selected else 0,
+                    "items_per_model": total_items,
+                    "resumed": False,
+                })
+
             row = await run_one(orchestrator, item, disable_arxiv=skip_arxiv)
             row["model"] = model
-            rows.append(row)
+            # Insert in original order
+            rows_by_id = {r["id"]: r for r in rows}
+            rows_by_id[row["id"]] = row
+            rows = [rows_by_id.get(i["id"]) for i in items if i["id"] in rows_by_id]
+
+            # ── Persist after EVERY question so sleep/crash loses nothing ──
+            _save_partial(model, rows, total_items)
+
+            completed_so_far += 1
+
         by_model[model] = {"summary": summarize_model(rows), "items": rows}
 
     payload = {
@@ -190,13 +303,64 @@ async def run_evaluation(
         "disable_arxiv": skip_arxiv,
         "by_model": by_model,
     }
+
     EVAL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_RESULTS_DIR / "latest.json"
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    from eval.analyze import write_analysis
 
+    from eval.analyze import write_analysis
     write_analysis(payload)
+
+    # Clean up partial files now that we have a complete result
+    _clear_partials(selected)
     return payload
+
+
+# ── Custom single-question evaluator ─────────────────────────────────────────
+
+async def run_custom_question(
+    question: str,
+    models: list[str],
+    *,
+    rag: RAGService | None = None,
+    disable_arxiv: bool = True,
+) -> list[dict[str, Any]]:
+    """Run a single user-supplied question against each model and return scored rows."""
+    rag = rag or RAGService()
+    if rag.indexed_chunks == 0:
+        rag.ingest_all(rebuild=False)
+
+    # Build a synthetic eval item with no gold keywords (score is answer quality proxy)
+    item = {
+        "id": "CUSTOM",
+        "category": "custom",
+        "question": question,
+        "gold_keywords": question.lower().split()[:8],  # use question words as proxy keywords
+        "expected_files": [],
+        "must_cite": False,
+    }
+
+    results: list[dict[str, Any]] = []
+    for model in models:
+        llm = OllamaLLM(model=model)
+        orchestrator = ResearchOrchestrator(llm, rag)
+        try:
+            row = await run_one(orchestrator, item, disable_arxiv=disable_arxiv)
+            row["model"] = model
+        except Exception as exc:  # noqa: BLE001
+            row = {
+                "id": "CUSTOM",
+                "category": "custom",
+                "question": question,
+                "model": model,
+                "answer": f"Error: {exc}",
+                "metrics": {"correctness": 0, "relevance": 0, "retrieval_quality": 0,
+                            "hallucination_rate": 1, "code_test": {"applicable": False}},
+                "latency_ms": 0,
+                "tokens": {"total": 0},
+            }
+        results.append(row)
+    return results
 
 
 def main() -> None:

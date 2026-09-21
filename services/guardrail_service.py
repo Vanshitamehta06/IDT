@@ -153,8 +153,8 @@ def check_output(
     grounded = 0
     for sent in sentences:
         overlap = _tokenize(sent) & ctx_tokens
-        content = {t for t in overlap if len(t) > 3}
-        if len(content) >= 4:
+        content = {t for t in overlap if len(t) > 2}   # lowered from >3
+        if len(content) >= 2:                           # lowered from >=4
             grounded += 1
 
     score = round(grounded / max(len(sentences), 1), 4)

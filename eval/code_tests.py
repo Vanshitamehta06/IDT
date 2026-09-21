@@ -40,10 +40,22 @@ def check_chunk_step(answer: str) -> bool:
     return fn(512, 100) == 412 and fn(10, 20) == 1
 
 
+def check_keyword_hit_rate(answer: str) -> bool:
+    fn = _exec_fn(extract_python(answer), "keyword_hit_rate")
+    # 2 of 3 keywords present → 0.666...
+    assert abs(fn("RAG retrieval generation", ["RAG", "retrieval", "missing"]) - 2/3) < 0.01
+    # all present
+    assert fn("hello world", ["hello", "world"]) == 1.0
+    # none present
+    assert fn("nothing here", ["absent", "keyword"]) == 0.0
+    return True
+
+
 CODE_TESTS = {
-    "rrf_score": check_rrf_score,
-    "bound_text": check_bound_text,
-    "chunk_step": check_chunk_step,
+    "rrf_score":         check_rrf_score,
+    "bound_text":        check_bound_text,
+    "chunk_step":        check_chunk_step,
+    "keyword_hit_rate":  check_keyword_hit_rate,
 }
 
 

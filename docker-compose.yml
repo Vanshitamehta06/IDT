@@ -1,30 +1,94 @@
-services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      OLLAMA_HOST: http://host.docker.internal:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3:8b}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
-      VECTOR_BACKEND: ${VECTOR_BACKEND:-faiss}
-      RESEARCH_API_URL: http://localhost:8000
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  pdf_data:        # uploaded research PDFs — persists across rebuilds
+  index_data:      # FAISS / Chroma vector indexes
+  eval_results:    # evaluation results JSON, charts, analysis markdown
 
-  ui:
-    build: .
-    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+# ── Common configuration shared by both services ──────────────────────────────
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    # Cache busting: rebuild when requirements change
+    args:
+      BUILDKIT_INLINE_CACHE: "1"
+  image: research-assistant:latest
+  restart: unless-stopped
+  extra_hosts:
+    # Bridge to host machine so containers can reach Ollama on localhost
+    - "host.docker.internal:host-gateway"
+  environment:
+    OLLAMA_HOST:              http://host.docker.internal:11434
+    OLLAMA_MODEL:             ${OLLAMA_MODEL:-llama3:8b}
+    EMBEDDING_MODEL:          ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+    VECTOR_BACKEND:           ${VECTOR_BACKEND:-faiss}
+    INCLUDE_CODE_INDEX:       ${INCLUDE_CODE_INDEX:-true}
+    EVAL_DISABLE_ARXIV:       ${EVAL_DISABLE_ARXIV:-true}
+    OLLAMA_NUM_CTX:           ${OLLAMA_NUM_CTX:-8192}
+    OLLAMA_NUM_PREDICT:       ${OLLAMA_NUM_PREDICT:-512}
+    OLLAMA_TIMEOUT_SECONDS:   ${OLLAMA_TIMEOUT_SECONDS:-600}
+    # Guardrail / rate-limit settings
+    RATE_LIMIT_ENABLED:       ${RATE_LIMIT_ENABLED:-true}
+    RATE_LIMIT_REQUESTS:      ${RATE_LIMIT_REQUESTS:-30}
+    RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+    GROUNDING_THRESHOLD:      ${GROUNDING_THRESHOLD:-0.25}
+    # Context limits (larger to support comparison prompts)
+    MAX_PROMPT_CHARS:         ${MAX_PROMPT_CHARS:-6000}
+    MAX_CONTEXT_CHARS:        ${MAX_CONTEXT_CHARS:-5000}
+
+
+# ── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  api:
+    <<: *common
+    container_name: research-api
+    command: >
+      uvicorn api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 1
+      --timeout-keep-alive 120
     ports:
-      - "8501:8501"
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Persist PDFs and indexes between container restarts
+      - pdf_data:/app/data/pdfs
+      - index_data:/app/data/indexes
+      - eval_results:/app/eval/results
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ── Streamlit frontend ───────────────────────────────────────────────────────
+  ui:
+    <<: *common
+    container_name: research-ui
+    command: >
+      streamlit run ui/app.py
+      --server.port 8501
+      --server.address 0.0.0.0
+      --server.headless true
+      --browser.gatherUsageStats false
+      --server.fileWatcherType none
+    ports:
+      - "${UI_PORT:-8501}:8501"
     environment:
+      # Override RESEARCH_API_URL so the UI talks to the API container by name
       RESEARCH_API_URL: http://api:8000
-      OLLAMA_HOST: http://host.docker.internal:11434
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      OLLAMA_HOST:      http://host.docker.internal:11434
     depends_on:
-      - api
-    restart: unless-stopped
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s

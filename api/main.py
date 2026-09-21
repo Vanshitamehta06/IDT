@@ -394,6 +394,155 @@ def eval_results_for_model(model_name: str) -> dict:
     return {"model": matched_key, **by_model[matched_key]}
 
 
+@app.post("/eval/ask")
+async def eval_ask(request: Request) -> dict:
+    """Evaluate a single user-supplied question against multiple models."""
+    body = await request.json()
+    question = (body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    models = body.get("models") or EVAL_MODELS
+
+    from eval.runner import run_custom_question
+    from eval.output_tests import run_output_tests, interpret_answer
+
+    _, rag, _ = _engines()
+    try:
+        rows = await run_custom_question(question, models, rag=rag, disable_arxiv=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    summary = {}
+    for row in rows:
+        m = row.get("model", "")
+        met = row.get("metrics") or {}
+        retrieved = row.get("retrieved_context") or []
+        # Run output tests for this model's answer
+        ot = run_output_tests(
+            answer=row.get("answer", ""),
+            question=question,
+            retrieved=retrieved,
+            gold_keywords=question.lower().split()[:8],
+            must_cite=False,
+        )
+        # Generate plain-English explanation of why this model answered this way
+        explanation = interpret_answer(
+            model=m,
+            answer=row.get("answer", ""),
+            question=question,
+            retrieved=retrieved,
+            metrics={
+                "correctness":       round(met.get("correctness") or 0, 4),
+                "relevance":         round(met.get("relevance") or 0, 4),
+                "retrieval_quality": round(met.get("retrieval_quality") or 0, 4),
+                "hallucination_rate":round(met.get("hallucination_rate") or 0, 4),
+                "latency_ms":        round(row.get("latency_ms") or 0, 1),
+            },
+            output_test_report=ot,
+        )
+        summary[m] = {
+            "correctness":        round(met.get("correctness") or 0, 4),
+            "relevance":          round(met.get("relevance") or 0, 4),
+            "retrieval_quality":  round(met.get("retrieval_quality") or 0, 4),
+            "hallucination_rate": round(met.get("hallucination_rate") or 0, 4),
+            "latency_ms":         round(row.get("latency_ms") or 0, 1),
+            "tokens_total":       (row.get("tokens") or {}).get("total") or 0,
+            "output_tests":       ot,
+            "explanation":        explanation,
+        }
+
+    return {"question": question, "rows": rows, "summary": summary}
+
+
+@app.get("/eval/output-tests")
+async def eval_output_tests_run(request: Request) -> dict:
+    """Run output tests against the latest eval results."""
+    from config import EVAL_RESULTS_DIR
+    from eval.output_tests import run_output_tests
+    from eval.runner import load_dataset
+
+    latest = EVAL_RESULTS_DIR / "latest.json"
+    if not latest.exists():
+        return {"available": False, "message": "No evaluation results yet."}
+
+    import json as _json
+    payload = _json.loads(latest.read_text(encoding="utf-8"))
+
+    # Build a quick lookup of gold_keywords and must_cite from the dataset
+    # (these are not stored in the eval results JSON but are needed for T05/T08)
+    try:
+        ds = load_dataset()
+        ds_by_id = {item["id"]: item for item in (ds.get("items") or [])}
+    except Exception:
+        ds_by_id = {}
+
+    all_results: dict[str, Any] = {}
+
+    for model, block in (payload.get("by_model") or {}).items():
+        if not isinstance(block, dict) or not block.get("items"):
+            continue
+        model_results = []
+        for row in block["items"]:
+            item_id = row.get("id", "")
+            ds_item = ds_by_id.get(item_id) or {}
+            ot = run_output_tests(
+                answer=row.get("answer", ""),
+                question=row.get("question", ""),
+                retrieved=row.get("retrieved_context") or [],
+                # Use gold_keywords from dataset, not from metrics dict
+                gold_keywords=ds_item.get("gold_keywords") or [],
+                must_cite=ds_item.get("must_cite", False),
+            )
+            model_results.append({
+                "id": item_id,
+                "category": row.get("category"),
+                "question": row.get("question"),
+                "verdict": ot["verdict"],
+                "pass_rate": ot["pass_rate"],
+                "critical_failures": ot["critical_failures"],
+                "results": ot["results"],
+            })
+        passed = sum(1 for r in model_results if r["verdict"] == "PASS")
+        all_results[model] = {
+            "total": len(model_results),
+            "passed": passed,
+            "failed": len(model_results) - passed,
+            "pass_rate": round(passed / max(len(model_results), 1), 4),
+            "items": model_results,
+        }
+
+    return {"available": True, "by_model": all_results}
+
+
+@app.get("/eval/guardrail-tests")
+def eval_guardrail_tests_run() -> dict:
+    """Run the guardrail test set (input-level, no LLM) and return effectiveness report."""
+    from eval.guardrail_tests import run_guardrail_tests
+    _, rag, _ = _engines()
+    return run_guardrail_tests(indexed_chunks=rag.indexed_chunks)
+
+
+@app.post("/eval/guardrail-eval")
+async def eval_guardrail_eval(request: Request) -> dict:
+    """Run all 25 guardrail questions against multiple models and return per-category results.
+
+    Body: {"models": ["llama3:8b", ...]}
+    """
+    body = await request.json()
+    models = body.get("models") or EVAL_MODELS
+    from eval.guardrail_tests import run_guardrail_eval
+    _, rag, _ = _engines()
+    try:
+        result = await run_guardrail_eval(
+            models=models,
+            rag=rag,
+            indexed_chunks=rag.indexed_chunks,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return result
+
+
 @app.post("/eval/run")
 async def eval_run(payload: EvalRunRequest) -> dict:
     import asyncio

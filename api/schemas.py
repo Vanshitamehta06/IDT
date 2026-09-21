@@ -17,7 +17,7 @@ class GuardrailResult(BaseModel):
     passed: bool
     reason: str = ""
     scope_score: float = 0.0  # 0–1 relevance to research domain
-    blocked_reason: Literal["out_of_scope", "no_sources", "rate_limited", ""] = ""
+    blocked_reason: Literal["out_of_scope", "no_sources", "rate_limited", "realtime_info_required", ""] = ""
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ class QueryRequest(BaseModel):
 
 class EvalRunRequest(BaseModel):
     models: list[str] | None = None
-    limit: int | None = Field(default=None, ge=1, le=30)
+    limit: int | None = Field(default=None, ge=1, le=33)
     disable_arxiv: bool = True
 
 

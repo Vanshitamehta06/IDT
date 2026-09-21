@@ -1,9 +1,40 @@
+# Version control
 .git
+.gitignore
+
+# Python artefacts
 .venv
 venv
 __pycache__
 *.pyc
-data/indexes
+*.pyo
+*.pyd
+.Python
+
+# Test / lint / type-check caches
 .pytest_cache
 .mypy_cache
+.ruff_cache
+
+# Streamlit config / secrets
 .streamlit
+
+# Large data that is volume-mounted at runtime
+data/indexes
+eval/results
+
+# Local development files
+*.log
+*.env
+.env
+.env.*
+secrets.toml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
